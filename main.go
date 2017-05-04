@@ -20,7 +20,7 @@ const URL = "https://vulners.com/api/v3/audit/audit/"
 
 var (
 	OSVersion      = []string{"cat", "/etc/os-release"}
-	UbuntuPackages = []string{"dpkg-query", "-W", "-f='${Package} ${Version} ${Architecture}\n'"}
+	UbuntuPackages = []string{"dpkg-query", "-W", "-f=${Package} ${Version} ${Architecture}\n"}
 	CentOSPackages = []string{"rpm", "-qa"}
 	AlpinePackages = []string{"apk", "-v", "info"}
 	UbuntuOS       = []string{"debian", "ubuntu", "kali"}
@@ -52,8 +52,8 @@ type ResponseBody struct {
 			BulletinID      string `json:"bulletinID"`
 		} `json:"reasons"`
 		Cvss struct {
-			Score  int    `json:"score"`
-			Vector string `json:"vector"`
+			Score  float64 `json:"score"`
+			Vector string  `json:"vector"`
 		} `json:"cvss"`
 		Cvelist []string `json:"cvelist"`
 		ID      string   `json:"id"`
@@ -62,8 +62,8 @@ type ResponseBody struct {
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
-
 	ctx := context.Background()
+
 	cli, err := client.NewEnvClient()
 	if err != nil {
 		log.Fatal(err)
@@ -80,25 +80,30 @@ func main() {
 }
 
 func getInfo(cli *client.Client, ctx context.Context, container types.Container) {
+	fmt.Println("For container with ID:", container.ID)
 	osver := executeCmd(cli, ctx, container.ID, OSVersion)
 
 	var pkgs []string
 	if checkOS(osver, UbuntuOS) {
 		temp := executeCmd(cli, ctx, container.ID, UbuntuPackages)
-		pkgs = strings.Split(temp, "\n")
+		pkgs = strings.Split(temp, "\r\n")
 	} else if checkOS(osver, CentOS) {
 		temp := executeCmd(cli, ctx, container.ID, CentOSPackages)
-		pkgs = strings.Split(temp, "\n")
+		pkgs = strings.Split(temp, "\r\n")
 	} else if checkOS(osver, AlpineOS) {
 		temp := executeCmd(cli, ctx, container.ID, AlpinePackages)
-		pkgs = strings.Split(temp, "\n")
+		temp2 := strings.Split(temp, "\r\n")
+		for _, v := range temp2 {
+			if !strings.Contains(v, "WARNING") {
+				pkgs = append(pkgs, v)
+			}
+		}
 	} else {
-		log.Fatal("Can't determine type of OS or OS is not supported...")
+		log.Fatal("Can't determine type of OS or OS is not supported: ", osver)
 	}
 
 	name, ver := getOSNameAndVersion(osver)
-	fmt.Println("For OS:", name+" "+ver)
-	//fmt.Println(name + " " + ver)
+	fmt.Println("OS:", name+" "+ver)
 	body := &RequestBody{
 		Os:      name,
 		Version: ver,
@@ -125,24 +130,26 @@ func getOSNameAndVersion(text string) (string, string) {
 	var name string
 	var version string
 
-	if i := strings.Index(text, "NAME="); i > -1 {
-		temp := text[i+6:]
-		i := strings.Index(temp, "\"")
-		name = temp[:i]
-
+	if i := strings.Index(text, "ID="); i > -1 {
+		name = assign(text[i+3:])
 	}
 	if i := strings.Index(text, "VERSION_ID="); i > -1 {
-		temp := text[i+11:]
-		if string(temp[0]) == "\"" {
-			i := strings.Index(temp[1:], "\"")
-			version = temp[1 : i+1]
-		} else {
-			i := strings.Index(temp, "\n")
-			version = temp[:i]
-		}
+		version = assign(text[i+11:])
 	}
 
 	return name, version
+}
+
+func assign(text string) string {
+	var res string
+	if string(text[0]) == "\"" {
+		i := strings.Index(text[1:], "\"")
+		res = text[1 : i+1]
+	} else {
+		i := strings.Index(text, "\r")
+		res = text[:i]
+	}
+	return res
 }
 
 func executeCmd(cli *client.Client, ctx context.Context, ID string, cmd []string) string {
@@ -157,7 +164,6 @@ func executeCmd(cli *client.Client, ctx context.Context, ID string, cmd []string
 	if err != nil {
 		log.Fatal(err)
 	}
-	//fmt.Println(resp)
 
 	hijack, err := cli.ContainerExecAttach(ctx, resp.ID, params)
 	if err != nil {
@@ -210,16 +216,28 @@ func getVulnerabilities(rb *RequestBody) ([]string, error) {
 
 func extractVulnerabilitiesFromResponse(body *ResponseBody) []string {
 	var result []string
+
 	if body.Result != "OK" {
-		fmt.Println("Importance:", body.Data.Cvss.Score)
-		fmt.Println("List of CVE:")
-		for _, v := range body.Data.Cvelist {
-			fmt.Println(v)
-		}
-		fmt.Println("List of Bulletin ID:")
-		for _, v := range body.Data.Reasons {
-			fmt.Println(v.BulletinID)
+		log.Println("Vulners err0r:", body.Data.Error)
+	} else {
+		if len(body.Data.Cvelist) > 0 || len(body.Data.Reasons) > 0 {
+			fmt.Println("Achtung! Vulnerabilities were found!")
+			if len(body.Data.Cvelist) > 0 {
+				fmt.Println("List of CVE:")
+				for _, v := range body.Data.Cvelist {
+					fmt.Println(v)
+				}
+			}
+			if len(body.Data.Reasons) > 0 {
+				fmt.Println("List of Bulletin ID:")
+				for _, v := range body.Data.Reasons {
+					fmt.Println(v.BulletinID)
+				}
+			}
+		} else {
+			fmt.Println("Container is clean, congratulations!")
 		}
 	}
+
 	return result
 }
