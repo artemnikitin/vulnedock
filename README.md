@@ -1,2 +1,2 @@
 # vulnedock
-Proof of concept for vulnerability management of Docker images
+Proof of concept for vulnerability management of Docker containers
